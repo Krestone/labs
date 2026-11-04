@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from configs.annotator import AnnotationConfig
 from jobs.models import AnnotationEvent
@@ -18,6 +18,31 @@ class IndexResult:
     analysis_id: str | None = None
     video_id: str | None = None
     has_warnings: bool = False
+
+
+@dataclass(frozen=True)
+class AccountCheck:
+    """What Nomadic reports for an API key: the account it belongs to."""
+
+    email: str | None
+
+
+class InvalidApiKeyError(ValueError):
+    """Nomadic rejected the API key."""
+
+
+BillingReason = Literal["out_of_credits", "uploads_not_enabled"]
+
+
+class BillingDeclinedError(Exception):
+    """Nomadic declined an upload or annotation for billing reasons, before starting or charging any work."""
+
+    def __init__(self, reason: BillingReason, available: float | None = None, required: float | None = None) -> None:
+        """Keep the account's balance and the cost, when Nomadic reported them."""
+        super().__init__(reason)
+        self.reason: BillingReason = reason
+        self.available = available
+        self.required = required
 
 
 class AnnotationGateway(Protocol):
@@ -49,3 +74,4 @@ class AnnotationGateway(Protocol):
 
 
 GatewayFactory = Callable[[AnnotationConfig], AnnotationGateway]
+KeyVerifier = Callable[[AnnotationConfig, str], AccountCheck]

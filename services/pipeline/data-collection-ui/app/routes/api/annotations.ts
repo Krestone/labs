@@ -1,6 +1,6 @@
 import { data } from 'react-router'
 
-import { type AnnotationJob, annotationStatus, annotationUrl } from '@/api/annotations'
+import { type AnnotationJob, annotationStatus, annotationUrl, type StationAccount } from '@/api/annotations'
 
 import type { Route } from './+types/annotations'
 
@@ -15,6 +15,28 @@ function episodeId(request: Request) {
 function annotator(base: URL | null) {
   if (!base) throw data({ error: 'Nomadic annotations are not configured.' }, { status: 404 })
   return base
+}
+
+// The key goes to the annotator over loopback; it is not logged here or sent back to the browser
+async function connect(base: URL, apiKey: FormDataEntryValue | null) {
+  try {
+    const response = await fetch(new URL('/api/v1/station/api-key', base), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: typeof apiKey === 'string' ? apiKey : '' }),
+      signal: AbortSignal.timeout(30000),
+    })
+    const body: { detail?: unknown } = await response.json()
+    if (!response.ok) {
+      return data(
+        { error: typeof body.detail === 'string' ? body.detail : 'The key could not be checked. Try again.' },
+        { status: response.status },
+      )
+    }
+    return data({ account: body as StationAccount })
+  } catch {
+    return data({ error: 'The key could not be checked. Try again.' }, { status: 503 })
+  }
 }
 
 export async function loader({ request, context: { NOMADIC_EPISODE_ANNOTATOR_URL } }: Route.LoaderArgs) {
@@ -36,7 +58,9 @@ export async function loader({ request, context: { NOMADIC_EPISODE_ANNOTATOR_URL
 export async function action({ request, context: { NOMADIC_EPISODE_ANNOTATOR_URL } }: Route.ActionArgs) {
   const base = annotator(NOMADIC_EPISODE_ANNOTATOR_URL)
   const id = episodeId(request)
-  const intent = (await request.formData()).get('intent')
+  const form = await request.formData()
+  const intent = form.get('intent')
+  if (intent === 'connect') return connect(base, form.get('api_key'))
   const target = annotationUrl(base, id)
   if (intent === 'refresh') target.pathname += '/refresh'
   try {

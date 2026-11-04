@@ -9,15 +9,36 @@ from pathlib import Path
 from typing import IO
 from uuid import UUID, uuid4
 
+from pydantic import SecretStr
+
 from configs.annotator import AnnotationConfig
+from jobs import station_key
 from jobs.episodes import recording_path
-from jobs.models import ACTIVE_STATES, AnnotationJob, AnnotationStatus
-from jobs.ports import AnnotationGateway, GatewayFactory
+from jobs.models import ACTIVE_STATES, AnnotationJob, AnnotationStatus, StationAccount, StationSetup
+from jobs.ports import AnnotationGateway, BillingDeclinedError, GatewayFactory, InvalidApiKeyError, KeyVerifier
 from jobs.store import JobStore, JobStoreError
-from jobs.workbench import workbench_url
+from jobs.workbench import api_keys_url, billing_url, signup_url, workbench_url
 from recording_conversion.preparation import RecordingPreparer
 
 logger = logging.getLogger(__name__)
+
+
+def _billing_message(exc: BillingDeclinedError, *, uploaded: bool) -> str:
+    if exc.reason == "uploads_not_enabled":
+        return "Nothing was sent. Enable uploads in Nomadic billing, then start the annotation again."
+    amounts = (
+        f"This recording needs {exc.required:.2f} credits and the account has {exc.available:.2f}. "
+        if exc.available is not None and exc.required is not None
+        else ""
+    )
+    if uploaded:
+        return f"{amounts}Nothing was charged. Top up, then retry; the recording is already uploaded."
+    return f"{amounts}Nothing was sent or charged. Top up, then start the annotation again."
+
+
+_ALREADY_CONNECTED = (
+    "This station is already connected to Nomadic. An administrator can change the key in the station configuration."
+)
 
 
 class AnnotationConflictError(Exception):
@@ -29,18 +50,30 @@ class AnnotationUnavailableError(Exception):
 
 
 class AnnotationService:
-    """Serialize expensive preparation/upload jobs on one worker, off the request threads."""
+    """Serialize expensive preparation/upload jobs on one worker, off the request threads.
 
-    def __init__(self, config: AnnotationConfig, gateway_factory: GatewayFactory) -> None:
+    Once a recording is uploaded, Nomadic does the remaining work; a follower thread waits for it so the worker can
+    prepare and upload the next recording. At most max_pending_jobs uploads are in Nomadic's hands at once; the worker
+    waits for a free slot before uploading another.
+    """
+
+    def __init__(
+        self, config: AnnotationConfig, gateway_factory: GatewayFactory, key_verifier: KeyVerifier | None = None
+    ) -> None:
         """Create a dormant service; disabled instances perform no filesystem or network work."""
         self.config = config
         self.gateway_factory = gateway_factory
+        self.key_verifier = key_verifier
+        self.account: StationAccount | None = None
         self.store: JobStore | None = None
         self._lock_file: IO[str] | None = None
         self._guard = threading.Lock()
         self._queue: queue.Queue[AnnotationJob | None] = queue.Queue(maxsize=config.max_pending_jobs)
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
+        # Uploaded recordings are processed by Nomadic; following them must not hold up the next upload.
+        self._follow_slots = threading.BoundedSemaphore(config.max_pending_jobs)
+        self._followers: set[threading.Thread] = set()
 
     def unavailable_reason(self) -> str | None:
         """Explain unavailable configuration without returning secrets or filesystem paths."""
@@ -54,8 +87,21 @@ class AnnotationService:
             return str(exc)
         return None
 
+    def _setup(self) -> StationSetup | None:
+        """Offer account links only when an enabled station is missing just its API key."""
+        if not self.config.enabled or self.config.api_key.get_secret_value():
+            return None
+        try:
+            return StationSetup(
+                signup_url=signup_url(self.config.dashboard_url),
+                api_keys_url=api_keys_url(self.config.dashboard_url),
+            )
+        except ValueError:
+            return None
+
     def start(self) -> None:
         """Acquire single-worker ownership and recover interrupted local jobs."""
+        self._load_station_key()
         with self._guard:
             if self.store or self.unavailable_reason():
                 return
@@ -83,6 +129,73 @@ class AnnotationService:
             self._worker = threading.Thread(target=self._work, name="nomadic-annotations", daemon=True)
             self._worker.start()
 
+    def connect(self, api_key: str) -> StationAccount:
+        """Verify an operator's key with Nomadic, then save it and start the worker; only for unconnected stations.
+
+        A station that already has a key, from its configuration or an earlier connection, keeps it. Replacing a key
+        from the page would let anyone who can open the UI redirect the station's uploads to another account.
+        """
+        api_key = api_key.strip()
+        if not self.config.enabled:
+            raise AnnotationConflictError("Nomadic annotations are not enabled for this station.")
+        if self.config.api_key.get_secret_value():
+            raise AnnotationConflictError(_ALREADY_CONNECTED)
+        if not api_key:
+            raise ValueError("Paste a Nomadic API key.")
+        # Keys travel in an HTTP header; text copied from a page can carry characters no key has.
+        if not api_key.isascii() or not api_key.isprintable() or " " in api_key:
+            raise ValueError(
+                "This is not a Nomadic API key: it contains spaces or special characters. Copy the key again and "
+                "paste only the key."
+            )
+        if self.key_verifier is None:
+            raise AnnotationUnavailableError("This annotator cannot check API keys.")
+        try:
+            check = self.key_verifier(self.config, api_key)
+        except InvalidApiKeyError:
+            raise ValueError(
+                "Nomadic did not accept this API key. Check that it was copied completely and has not expired."
+            ) from None
+        except Exception as exc:
+            # SDK exceptions may contain request details. Do not chain or log them.
+            logger.warning("Could not verify a Nomadic API key (%s)", type(exc).__name__)
+            raise AnnotationUnavailableError(
+                "Nomadic could not be reached to check the key. Check the station's internet connection and try again."
+            ) from None
+        with self._guard:
+            if self.config.api_key.get_secret_value():
+                raise AnnotationConflictError(_ALREADY_CONNECTED)
+            try:
+                station_key.save(self.config.state_path, api_key, check.email)
+            except OSError as exc:
+                raise AnnotationUnavailableError(
+                    "The key could not be saved. Check the station's data directory."
+                ) from exc
+            self.config.api_key = SecretStr(api_key)
+            self.account = StationAccount(email=check.email)
+        self.start()
+        return self.account
+
+    def _load_station_key(self) -> None:
+        """Use a key connected from the episode page when the configuration does not set one."""
+        if not self.config.enabled or self.config.api_key.get_secret_value():
+            return
+        try:
+            saved = station_key.load(self.config.state_path)
+        except (OSError, ValueError, KeyError):
+            logger.warning("The saved Nomadic API key could not be read; the station needs to be connected again")
+            return
+        if saved:
+            api_key, email = saved
+            self.config.api_key = SecretStr(api_key)
+            self.account = StationAccount(email=email)
+
+    def _billing_url(self) -> str | None:
+        try:
+            return billing_url(self.config.dashboard_url)
+        except ValueError:
+            return None
+
     def _running_store(self) -> JobStore:
         if self.store is None:
             raise AnnotationUnavailableError("The annotation worker is not running. Check the annotator's logs.")
@@ -92,9 +205,16 @@ class AnnotationService:
         """Read the latest persisted result without side effects."""
         reason = self.unavailable_reason()
         if reason:
-            return AnnotationStatus(enabled=self.config.enabled, message=reason)
+            return AnnotationStatus(enabled=self.config.enabled, message=reason, setup=self._setup())
         job = self._running_store().latest(episode_id)
-        status = AnnotationStatus(enabled=True, message="", job=job)
+        status = AnnotationStatus(
+            enabled=True,
+            message="",
+            job=job,
+            account=self.account,
+            can_resume=bool(job and job.state not in ACTIVE_STATES and self._resumable(job)),
+            billing_url=self._billing_url(),
+        )
         if job and job.video_id:
             job.viewer_url = workbench_url(self.config.dashboard_url, job.batch_id, job.video_id)
         if job and (job.state in ACTIVE_STATES or job.remote_started or job.state == "completed"):
@@ -143,21 +263,36 @@ class AnnotationService:
         return recording_path(self.config, episode_id)
 
     def refresh(self, episode_id: UUID) -> AnnotationJob:
-        """Retry retrieval of known remote work, without another upload or analysis."""
+        """Continue known remote work from where it stopped, never uploading the recording again."""
         if reason := self.unavailable_reason():
             raise AnnotationConflictError(reason)
         with self._guard:
             job = self._running_store().latest(episode_id)
-            if not job or not job.video_id or not (job.analysis_id or job.batch_id):
+            if not job or not self._resumable(job):
                 raise AnnotationConflictError("No remote analysis reference is available to refresh.")
             if job.state in ACTIVE_STATES or job.state == "completed":
                 return job
             if self._queue.full() or self._stop.is_set():
                 raise AnnotationConflictError("The annotation worker is busy or stopping.")
-            job.state, job.message = "queued", "Waiting to refresh the saved Nomadic result."
+            job.state, job.message, job.billing = "queued", "Waiting to continue with the saved upload.", None
             self._save(job)
             self._queue.put_nowait(job)
             return job
+
+    @staticmethod
+    def _resumable(job: AnnotationJob) -> bool:
+        """Whether retrying can continue the saved remote work without starting a second analysis.
+
+        A saved analysis or batch is only fetched. An upload whose ingest result was never received is waited on again.
+        A recording is indexed again only when Nomadic declined the first request for credits, so no analysis exists.
+        """
+        if not job.remote_started or job.state == "completed":
+            return False
+        if job.analysis_id or job.batch_id:
+            return bool(job.video_id)
+        if job.ingest_id and not job.video_id:
+            return True
+        return bool(job.video_id) and job.billing == "out_of_credits"
 
     def _fetch(self, job: AnnotationJob, gateway: AnnotationGateway) -> None:
         if job.video_id is None:
@@ -175,7 +310,9 @@ class AnnotationService:
         self._save(job)
 
     def _run(self, job: AnnotationJob) -> None:
+        """Prepare and upload on the worker, then let a follower wait for Nomadic so the next upload can start."""
         gateway = None
+        reserved = False
         stage = "preparing"
         prepared = self.config.state_path / "prepared" / f"{job.job_id}.mcap"
         try:
@@ -184,12 +321,28 @@ class AnnotationService:
                 gateway = self.gateway_factory(self.config)
                 self._fetch(job, gateway)
                 return
+            if job.remote_started:
+                # Continue the saved upload: wait for its processing again, or analyze it after a credit refusal.
+                stage = "ingesting" if job.video_id is None else "indexing"
+                self._reserve_follower()
+                reserved = True
+                gateway = self.gateway_factory(self.config)
+                job.state = stage
+                job.message = (
+                    "Nomadic is processing the recording." if stage == "ingesting" else "Analyzing robotic actions."
+                )
+                self._save(job)
+                self._hand_off(job, gateway)
+                gateway, reserved = None, False
+                return
             job.state, job.message = "preparing", "Preparing cameras and robot signals."
             self._save(job)
             source = self._source(job.episode_id)
             job.source_sha256, job.warnings = RecordingPreparer(
                 self.config.spec_path, self.config.policy_contract_path
             ).prepare(source, prepared, job.episode_id)
+            self._reserve_follower()
+            reserved = True
             stage = "connecting"
             gateway = self.gateway_factory(self.config)
             stage = "uploading"
@@ -199,7 +352,38 @@ class AnnotationService:
             job.state, job.message = "ingesting", "Nomadic is processing the recording."
             stage = "ingesting"
             self._save(job)
-            job.video_id = gateway.ingest(job.ingest_id)
+            self._hand_off(job, gateway)
+            gateway, reserved = None, False
+        except Exception as exc:
+            self._fail(job, stage, exc)
+        finally:
+            self._close(job, gateway)
+            if reserved:
+                self._follow_slots.release()
+            with suppress(OSError):
+                prepared.unlink(missing_ok=True)
+
+    def _reserve_follower(self) -> None:
+        """Wait before uploading while max_pending_jobs uploads are still being processed by Nomadic."""
+        while not self._follow_slots.acquire(timeout=1):
+            if self._stop.is_set():
+                raise InterruptedError("Worker is stopping.")
+
+    def _hand_off(self, job: AnnotationJob, gateway: AnnotationGateway) -> None:
+        """Follow an uploaded recording on its own thread, using the slot reserved before the upload."""
+        follower = threading.Thread(
+            target=self._follow, args=(job, gateway), name=f"nomadic-follow-{job.job_id}", daemon=True
+        )
+        with self._guard:
+            self._followers.add(follower)
+        follower.start()
+
+    def _follow(self, job: AnnotationJob, gateway: AnnotationGateway) -> None:
+        """Wait for Nomadic to ingest, annotate and return the uploaded recording."""
+        stage = "ingesting"
+        try:
+            if job.video_id is None:
+                job.video_id = gateway.ingest(job.ingest_id or "")
             job.state, job.message = "indexing", "Analyzing robotic actions."
             stage = "indexing"
             self._save(job)
@@ -207,20 +391,36 @@ class AnnotationService:
             stage = "fetching"
             self._fetch(job, gateway)
         except Exception as exc:
-            job.state = "interrupted" if job.remote_started else "failed"
-            # SDK exceptions may contain request details. Do not persist or log them.
-            job.message = self._failure_message(stage, exc)
-            logger.warning("Annotation job %s stopped during processing (%s)", job.job_id, type(exc).__name__)
-            if self.store:
-                self.store.save(job)
+            self._fail(job, stage, exc)
         finally:
-            if gateway:
-                try:
-                    gateway.close()
-                except Exception:
-                    logger.warning("Could not close the Nomadic session for job %s", job.job_id)
-            with suppress(OSError):
-                prepared.unlink(missing_ok=True)
+            self._close(job, gateway)
+            with self._guard:
+                self._followers.discard(threading.current_thread())
+            self._follow_slots.release()
+
+    def _fail(self, job: AnnotationJob, stage: str, exc: Exception) -> None:
+        if isinstance(exc, BillingDeclinedError):
+            job.billing = exc.reason
+            if stage == "uploading":
+                # Nomadic refused the upload, so nothing was sent and the episode can be submitted again.
+                job.remote_started = False
+        job.state = "interrupted" if job.remote_started else "failed"
+        # SDK exceptions may contain request details. Do not persist or log them.
+        job.message = self._failure_message(stage, exc)
+        logger.warning("Annotation job %s stopped during processing (%s)", job.job_id, type(exc).__name__)
+        if self.store:
+            try:
+                self.store.save(job)
+            except JobStoreError:
+                logger.error("Annotation job %s could not be saved after it stopped", job.job_id)
+
+    @staticmethod
+    def _close(job: AnnotationJob, gateway: AnnotationGateway | None) -> None:
+        if gateway:
+            try:
+                gateway.close()
+            except Exception:
+                logger.warning("Could not close the Nomadic session for job %s", job.job_id)
 
     def _index(self, job: AnnotationJob, gateway: AnnotationGateway) -> None:
         """Save returned references before checking whether indexing completed."""
@@ -239,6 +439,8 @@ class AnnotationService:
 
     def _failure_message(self, stage: str, exc: Exception) -> str:
         """Give an actionable stage-specific message without exposing SDK request details."""
+        if isinstance(exc, BillingDeclinedError):
+            return _billing_message(exc, uploaded=stage != "uploading")
         if stage == "preparing" and isinstance(exc, FileNotFoundError | ValueError):
             message = str(exc)
             secret = self.config.api_key.get_secret_value()
@@ -293,10 +495,15 @@ class AnnotationService:
             self._queue.put_nowait(None)
         if self._worker:
             self._worker.join(timeout=1)
+        with self._guard:
+            followers = list(self._followers)
+        for follower in followers:
+            follower.join(timeout=1)
         if self.store:
             with suppress(JobStoreError, ValueError):
                 self.store.recover()
         # A still-running SDK call retains the lock until process exit. A new
-        # process must not claim ownership while this worker can still write.
-        if self._lock_file and (self._worker is None or not self._worker.is_alive()):
+        # process must not claim ownership while this worker or a follower can still write.
+        threads = [self._worker, *followers]
+        if self._lock_file and not any(thread and thread.is_alive() for thread in threads):
             self._lock_file.close()

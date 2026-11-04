@@ -52,6 +52,20 @@ class AnnotationJob(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     events: list[AnnotationEvent] = Field(default_factory=list)
     viewer_url: str | None = None
+    billing: Literal["out_of_credits", "uploads_not_enabled"] | None = None
+
+
+class StationSetup(BaseModel):
+    """Links an operator follows to connect a station that has no Nomadic API key yet."""
+
+    signup_url: str
+    api_keys_url: str
+
+
+class StationAccount(BaseModel):
+    """The Nomadic account an operator connected this station to; never includes the key."""
+
+    email: str | None
 
 
 class AnnotationStatus(BaseModel):
@@ -61,3 +75,7 @@ class AnnotationStatus(BaseModel):
     can_submit: bool = False
     message: str
     job: AnnotationJob | None = None
+    setup: StationSetup | None = None
+    account: StationAccount | None = None
+    can_resume: bool = False
+    billing_url: str | None = None

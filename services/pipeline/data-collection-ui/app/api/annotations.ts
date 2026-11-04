@@ -24,11 +24,25 @@ export type AnnotationJob = {
   index_run_id: string | null
   analysis_id: string | null
   viewer_url: string | null
+  billing?: 'out_of_credits' | 'uploads_not_enabled' | null
   warnings: string[]
   events: AnnotationEvent[]
 }
 
-export type AnnotationStatus = { enabled: boolean; can_submit: boolean; message: string; job: AnnotationJob | null }
+export type StationSetup = { signup_url: string; api_keys_url: string }
+
+export type StationAccount = { email: string | null }
+
+export type AnnotationStatus = {
+  enabled: boolean
+  can_submit: boolean
+  message: string
+  job: AnnotationJob | null
+  setup?: StationSetup | null
+  account?: StationAccount | null
+  can_resume?: boolean
+  billing_url?: string | null
+}
 
 export function annotationUrl(base: URL, episodeId: string, download = false) {
   return new URL(`/api/v1/episodes/${encodeURIComponent(episodeId)}/annotations${download ? '/download' : ''}`, base)

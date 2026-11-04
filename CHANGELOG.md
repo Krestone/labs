@@ -6,7 +6,11 @@
   `pipeline-episodes` package, so other pipeline services can read episodes without depending on data-collection.
 - Added the optional `nomadic-episode-annotator` service, which sends a saved episode to Nomadic for timestamped action
   annotation. When it is enabled, the `data-collection-ui` episode page shows an annotation panel to start a run and
-  view saved results. Enabling it uploads episode data to Nomadic; see the service README before turning it on.
+  view saved results. Enabling it uploads episode data to Nomadic; see the service README before turning it on. The
+  service listens on loopback only, so only the `data-collection-ui` server can reach it. A station without an API key
+  can be connected from the episode page: the operator pastes a key, which is checked with Nomadic and saved on the
+  station. When Nomadic declines a run because the account is out of credits or cannot upload yet, the panel says so
+  and links to Nomadic billing; after a top-up the run continues without uploading the recording again.
 
 ## [0.2.1] - 2026-09-10
 
