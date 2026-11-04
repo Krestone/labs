@@ -8,6 +8,7 @@ import Button, { ButtonLink } from '@/components/Button'
 
 import ActionList from './ActionList'
 import { lanes } from './actions'
+import Billing from './Billing'
 import { NOMADIC_BUTTON } from './nomadicButton'
 import NomadicMark from './NomadicMark'
 import Progress from './Progress'
@@ -79,6 +80,8 @@ function summaryOf(status: AnnotationStatus, active: boolean): string | undefine
   if (status.setup) return 'Not connected'
   if (active) return 'In progress'
   if (status.job?.state === 'completed') return `${status.job.events.length} actions`
+  if (status.job?.billing === 'out_of_credits') return 'Out of credits'
+  if (status.job?.billing === 'uploads_not_enabled') return 'Uploads not enabled'
   if (status.job) return 'Needs attention'
   return undefined
 }
@@ -115,6 +118,14 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
           {status.message}
         </p>
       )}
+      {!active && job?.billing && (
+        <Billing
+          job={{ ...job, billing: job.billing }}
+          billingUrl={status.billing_url}
+          canResume={!!status.can_resume}
+          endpoint={endpoint}
+        />
+      )}
       {canStart && (
         <fetcher.Form method='post' action={endpoint}>
           <button className={NOMADIC_BUTTON} type='submit' disabled={state !== 'idle'}>
@@ -122,11 +133,11 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
           </button>
         </fetcher.Form>
       )}
-      {!active && job?.state === 'interrupted' && job.video_id && (job.analysis_id || job.batch_id) && (
+      {!active && status.can_resume && !job?.billing && (
         <fetcher.Form method='post' action={endpoint}>
           <input type='hidden' name='intent' value='refresh' />
           <Button variant='outline' type='submit' disabled={state !== 'idle'}>
-            Refresh saved result
+            {job?.analysis_id || job?.batch_id ? 'Refresh saved result' : 'Continue with the saved upload'}
           </Button>
         </fetcher.Form>
       )}
@@ -140,9 +151,11 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
           {active ? (
             <Progress state={job.state} message={job.message} />
           ) : (
-            <p className='text' role='status' aria-live='polite'>
-              {job.message}
-            </p>
+            !job.billing && (
+              <p className='text' role='status' aria-live='polite'>
+                {job.message}
+              </p>
+            )
           )}
           {(job.viewer_url || job.state === 'completed') && (
             <div className='flex flex-wrap items-center gap-3'>

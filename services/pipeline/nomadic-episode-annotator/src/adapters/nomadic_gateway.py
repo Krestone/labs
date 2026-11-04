@@ -1,6 +1,8 @@
 """Nomadic SDK operations and annotation response normalization."""
 
 import math
+import re
+from http import HTTPStatus
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -8,7 +10,7 @@ import nomadic  # type: ignore[import-untyped]
 
 from configs.annotator import AnnotationConfig
 from jobs.models import AnnotationEvent
-from jobs.ports import AccountCheck, IndexResult, InvalidApiKeyError
+from jobs.ports import AccountCheck, BillingDeclinedError, IndexResult, InvalidApiKeyError
 
 
 class NomadicGateway:
@@ -31,7 +33,12 @@ class NomadicGateway:
 
     def upload(self, path: str) -> str:
         """Return the ingest identifier before waiting for MCAP processing."""
-        response = dict(self.client.upload(path, folder=self.config.folder, wait_for_uploaded=False, index_data=False))
+        try:
+            response = dict(
+                self.client.upload(path, folder=self.config.folder, wait_for_uploaded=False, index_data=False)
+            )
+        except nomadic.APIError as exc:
+            raise billing_declined(exc) or exc from None
         ingest_id = response.get("mcap_ingest_id")
         if not ingest_id:
             raise ValueError("The SDK did not return an MCAP ingest identifier.")
@@ -45,7 +52,10 @@ class NomadicGateway:
 
     def index(self, video_id: str) -> IndexResult:
         """Run robotics indexing for the primary camera view."""
-        results = self.client.index([video_id], mode="robotics", timeout=self.config.timeout_seconds)
+        try:
+            results = self.client.index([video_id], mode="robotics", timeout=self.config.timeout_seconds)
+        except nomadic.APIError as exc:
+            raise billing_declined(exc) or exc from None
         result = dict(results[video_id])
         return IndexResult(
             completed=result.get("status") == "completed",
@@ -70,6 +80,19 @@ class NomadicGateway:
     def close(self) -> None:
         """Release the SDK's HTTP connection pool."""
         self.client.session.close()
+
+
+def billing_declined(exc: Exception) -> BillingDeclinedError | None:
+    """Recognize Nomadic's 402 answers, which describe the account's billing state rather than the request."""
+    if getattr(exc, "status_code", None) != HTTPStatus.PAYMENT_REQUIRED:
+        return None
+    message = str(getattr(exc, "message", "") or "")
+    if "upload" in message.lower():
+        return BillingDeclinedError("uploads_not_enabled")
+    amounts = re.search(r"Available (\d+(?:\.\d+)?); required (\d+(?:\.\d+)?)", message)
+    if amounts:
+        return BillingDeclinedError("out_of_credits", float(amounts[1]), float(amounts[2]))
+    return BillingDeclinedError("out_of_credits")
 
 
 def verify_api_key(config: AnnotationConfig, api_key: str) -> AccountCheck:

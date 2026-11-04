@@ -52,6 +52,7 @@ class AnnotationJob(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     events: list[AnnotationEvent] = Field(default_factory=list)
     viewer_url: str | None = None
+    billing: Literal["out_of_credits", "uploads_not_enabled"] | None = None
 
 
 class StationSetup(BaseModel):
@@ -76,3 +77,5 @@ class AnnotationStatus(BaseModel):
     job: AnnotationJob | None = None
     setup: StationSetup | None = None
     account: StationAccount | None = None
+    can_resume: bool = False
+    billing_url: str | None = None

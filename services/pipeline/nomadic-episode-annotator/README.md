@@ -34,8 +34,9 @@ Read this before enabling the service, and confirm the decision with whoever own
   `NOMADIC_FOLDER` folder (default `Franka LABS`) of the account that owns `NOMADIC_API_KEY`. Retention and deletion
   follow that account's terms with Nomadic, not LABS.
 - **When:** only when an operator selects **Auto Annotate with Nomadic** for one saved episode. Nothing is sent in the
-  background, and uploads or analyses with an uncertain outcome are never retried automatically. **Refresh saved
-  result** only fetches an existing analysis.
+  background, and uploads or analyses with an uncertain outcome are never retried automatically. Continuing a job from
+  the panel never uploads the recording again: it fetches a saved analysis, waits again for a saved upload, or analyzes
+  a saved upload that Nomadic declined for lack of credits.
 - **What stays local:** the API key (never sent back to the browser or logged), raw episodes, the original processed
   recording, other episodes and the job store. The prepared copy is deleted from the station once the job ends.
 
@@ -194,8 +195,15 @@ accuracy should also be reviewed against the intended annotation task.
 - **Queue full:** wait for a running annotation to finish, then retry.
 - **Upload, processing or annotation interrupted:** inspect the saved references and Nomadic workspace before submitting
   again. The service does not repeat uploads or analyses after an uncertain outcome.
+- **Not enough Nomadic credits:** Nomadic declined the analysis before starting it, so nothing was charged and the
+  recording stays uploaded. Top up from the link in the panel, then use **Retry annotation**; the saved upload is
+  analyzed without uploading again.
+- **Uploads not enabled for the Nomadic account:** nothing was sent. Enable uploads in Nomadic billing from the link in
+  the panel, then start the annotation again.
 - **Saved result could not be loaded:** use **Refresh saved result** when offered. This retrieves the existing analysis
   without uploading or analyzing again.
+- **Processing result was not received:** use **Continue with the saved upload** when offered. This waits for Nomadic to
+  finish the saved upload without sending it again.
 - **Service restarted during annotation:** the job is marked interrupted. Known Nomadic identifiers are retained for
   inspection or retrieval.
 - **Storage unavailable:** check that the state directory is writable and persistent. Do not remove annotation state to

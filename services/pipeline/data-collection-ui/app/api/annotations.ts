@@ -24,6 +24,7 @@ export type AnnotationJob = {
   index_run_id: string | null
   analysis_id: string | null
   viewer_url: string | null
+  billing?: 'out_of_credits' | 'uploads_not_enabled' | null
   warnings: string[]
   events: AnnotationEvent[]
 }
@@ -39,6 +40,8 @@ export type AnnotationStatus = {
   job: AnnotationJob | null
   setup?: StationSetup | null
   account?: StationAccount | null
+  can_resume?: boolean
+  billing_url?: string | null
 }
 
 export function annotationUrl(base: URL, episodeId: string, download = false) {

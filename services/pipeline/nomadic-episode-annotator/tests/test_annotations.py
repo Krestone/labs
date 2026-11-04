@@ -15,7 +15,6 @@ from uuid import UUID
 
 import av
 import pytest
-import requests
 import uuid7
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -25,7 +24,6 @@ from mcap.reader import make_reader
 from mcap.writer import Writer
 from mcap_protobuf.decoder import DecoderFactory
 from pipeline_episodes import EpisodeMetadata, EpisodeProcessed, EpisodeStatus, episode_directory
-from pydantic import SecretStr
 
 from adapters.nomadic_gateway import NomadicGateway, annotation_events, primary_video
 from configs.annotator import AnnotationConfig, get_annotation_config
@@ -40,26 +38,6 @@ from jobs.workbench import workbench_url
 from recording_conversion.preparation import RecordingPreparer
 
 T0 = 1_700_000_000_000_000_000
-
-
-@pytest.fixture(autouse=True)
-def no_live_requests(monkeypatch: pytest.MonkeyPatch) -> None:
-    def reject(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("Tests must never call a live service")
-
-    monkeypatch.setattr(requests.sessions.Session, "request", reject)
-
-
-@pytest.fixture
-def config(tmp_path: Path) -> AnnotationConfig:
-    return AnnotationConfig(
-        enabled=True,
-        api_key=SecretStr("test-key-never-send"),
-        state_path=tmp_path / "annotations",
-        processed_episodes_path=tmp_path / "processed",
-        spec_path=tmp_path / "spec.json",
-        timeout_seconds=1,
-    )
 
 
 def schema_and_class(*, image: bool = False) -> tuple[bytes, type[Message]]:

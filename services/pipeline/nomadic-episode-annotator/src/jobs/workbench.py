@@ -32,3 +32,8 @@ def signup_url(dashboard_url: str) -> str:
 def api_keys_url(dashboard_url: str) -> str:
     """Link to the API keys page for an existing Nomadic account."""
     return _link(_dashboard(dashboard_url), "/profile", {"tab": "apiKeys"})
+
+
+def billing_url(dashboard_url: str) -> str:
+    """Link to the account's billing page, to top up credits or enable uploads."""
+    return _link(_dashboard(dashboard_url), "/profile", {"tab": "billing"})
