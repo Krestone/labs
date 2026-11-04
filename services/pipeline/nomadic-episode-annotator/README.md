@@ -12,8 +12,10 @@ interactions. Stations without this service run unchanged.
 - Keeps job state in `/workspace/data/nomadic_annotations` (read-write).
 - Configured through `NOMADIC_*` environment variables; see [Configuration](#configuration).
 
-Runs as a single process because the job store admits one worker. Only the `data-collection-ui` server calls it, and
-only when that server has `NOMADIC_EPISODE_ANNOTATOR_PORT` set; otherwise the episode page shows no annotation panel.
+Runs as a single process because the job store admits one worker. The worker prepares and uploads one recording at a
+time; once an upload finishes, Nomadic processes it while the worker starts on the next one, for up to
+`NOMADIC_MAX_PENDING_JOBS` uploads at once. Only the `data-collection-ui` server calls it, and only when that server has
+`NOMADIC_EPISODE_ANNOTATOR_PORT` set; otherwise the episode page shows no annotation panel.
 
 ## Data leaving the station
 
@@ -120,7 +122,7 @@ not referenced in `docker-compose.nomadic.yml`, add it to the service's `environ
 | `NOMADIC_BASE_URL`                | `https://api-prod.nomadicml.com`      | Connect to a different Nomadic API deployment.                 |
 | `NOMADIC_DASHBOARD_URL`           | `https://app.nomadicml.com`           | Open Workbench in a different Nomadic deployment.              |
 | `NOMADIC_TIMEOUT_SECONDS`         | `3600`                                | Change the wait limit for recording processing and annotation. |
-| `NOMADIC_MAX_PENDING_JOBS`        | `4`                                   | Change the queue bound; one worker handles annotation jobs.    |
+| `NOMADIC_MAX_PENDING_JOBS`        | `4`                                   | Change the queue bound and how many uploads Nomadic processes. |
 | `NOMADIC_MAX_RECORDING_BYTES`     | `4294967296` (4 GiB)                  | Change the accepted recording size.                            |
 
 With `NOMADIC_ENABLED=false` the episode page explains why and does not offer submission. Without an API key it offers

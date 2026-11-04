@@ -5,7 +5,7 @@ import io
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -834,6 +834,87 @@ def test_queue_is_bounded_while_an_upload_is_running(config: AnnotationConfig) -
     finally:
         FakeGateway.finish.set()
         service.close()
+
+
+class SlowNomadicGateway(FakeGateway):
+    """Uploads at once, then keeps Nomadic's processing open until the test releases it."""
+
+    uploads: ClassVar[list[str]] = []
+    processing = threading.Event()
+
+    def upload(self, path: str) -> str:
+        assert Path(path).exists()
+        self.uploads.append(path)
+        return "ingest-1"
+
+    def ingest(self, ingest_id: str) -> str:
+        assert self.processing.wait(5)
+        return super().ingest(ingest_id)
+
+
+def wait_for_uploads(count: int) -> None:
+    deadline = time.monotonic() + 10
+    while len(SlowNomadicGateway.uploads) < count and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(SlowNomadicGateway.uploads) == count
+
+
+@pytest.fixture
+def slow_nomadic() -> Iterator[None]:
+    SlowNomadicGateway.uploads = []
+    SlowNomadicGateway.processing.clear()
+    yield
+    SlowNomadicGateway.processing.set()
+
+
+@pytest.mark.usefixtures("slow_nomadic")
+def test_next_upload_starts_while_nomadic_processes_the_previous_one(config: AnnotationConfig) -> None:
+    episodes = [saved_episode(config)[0] for _ in range(2)]
+    service = started(AnnotationService(config, SlowNomadicGateway))
+    try:
+        for episode in episodes:
+            service.submit(episode)
+        wait_for_uploads(2)
+        assert [service.status(episode).job.state for episode in episodes] == ["ingesting", "ingesting"]
+        assert not any((config.state_path / "prepared").iterdir())
+        SlowNomadicGateway.processing.set()
+        for episode in episodes:
+            assert wait_for_job(service, episode, "completed").analysis_id == "analysis-1"
+    finally:
+        service.close()
+
+
+@pytest.mark.usefixtures("slow_nomadic")
+def test_uploads_wait_when_every_follower_is_busy(config: AnnotationConfig) -> None:
+    config.max_pending_jobs = 1
+    episodes = [saved_episode(config)[0] for _ in range(2)]
+    service = started(AnnotationService(config, SlowNomadicGateway))
+    try:
+        for episode in episodes:
+            service.submit(episode)
+        wait_for_uploads(1)
+        time.sleep(0.2)
+        assert len(SlowNomadicGateway.uploads) == 1
+        SlowNomadicGateway.processing.set()
+        for episode in episodes:
+            wait_for_job(service, episode, "completed")
+        assert len(SlowNomadicGateway.uploads) == 2
+    finally:
+        service.close()
+
+
+@pytest.mark.usefixtures("slow_nomadic")
+def test_shutdown_keeps_the_storage_lock_while_a_follower_can_still_write(config: AnnotationConfig) -> None:
+    episode, _ = saved_episode(config)
+    service = started(AnnotationService(config, SlowNomadicGateway))
+    service.submit(episode)
+    wait_for_uploads(1)
+    service.close()
+    assert service.status(episode).job.state == "interrupted"
+    with pytest.raises(AnnotationConflictError, match="owns this storage directory"):
+        AnnotationService(config, SlowNomadicGateway).start()
+    SlowNomadicGateway.processing.set()
+    assert wait_for_job(service, episode, "interrupted").remote_started
 
 
 def test_local_preparation_can_be_retried_without_remote_work(config: AnnotationConfig) -> None:

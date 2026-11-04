@@ -36,7 +36,12 @@ class AnnotationUnavailableError(Exception):
 
 
 class AnnotationService:
-    """Serialize expensive preparation/upload jobs on one worker, off the request threads."""
+    """Serialize expensive preparation/upload jobs on one worker, off the request threads.
+
+    Once a recording is uploaded, Nomadic does the remaining work; a follower thread waits for it so the worker can
+    prepare and upload the next recording. At most max_pending_jobs uploads are in Nomadic's hands at once; the worker
+    waits for a free slot before uploading another.
+    """
 
     def __init__(
         self, config: AnnotationConfig, gateway_factory: GatewayFactory, key_verifier: KeyVerifier | None = None
@@ -52,6 +57,9 @@ class AnnotationService:
         self._queue: queue.Queue[AnnotationJob | None] = queue.Queue(maxsize=config.max_pending_jobs)
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
+        # Uploaded recordings are processed by Nomadic; following them must not hold up the next upload.
+        self._follow_slots = threading.BoundedSemaphore(config.max_pending_jobs)
+        self._followers: set[threading.Thread] = set()
 
     def unavailable_reason(self) -> str | None:
         """Explain unavailable configuration without returning secrets or filesystem paths."""
@@ -260,7 +268,9 @@ class AnnotationService:
         self._save(job)
 
     def _run(self, job: AnnotationJob) -> None:
+        """Prepare and upload on the worker, then let a follower wait for Nomadic so the next upload can start."""
         gateway = None
+        reserved = False
         stage = "preparing"
         prepared = self.config.state_path / "prepared" / f"{job.job_id}.mcap"
         try:
@@ -275,6 +285,8 @@ class AnnotationService:
             job.source_sha256, job.warnings = RecordingPreparer(
                 self.config.spec_path, self.config.policy_contract_path
             ).prepare(source, prepared, job.episode_id)
+            self._reserve_follower()
+            reserved = True
             stage = "connecting"
             gateway = self.gateway_factory(self.config)
             stage = "uploading"
@@ -284,7 +296,37 @@ class AnnotationService:
             job.state, job.message = "ingesting", "Nomadic is processing the recording."
             stage = "ingesting"
             self._save(job)
-            job.video_id = gateway.ingest(job.ingest_id)
+            self._hand_off(job, gateway)
+            gateway, reserved = None, False
+        except Exception as exc:
+            self._fail(job, stage, exc)
+        finally:
+            self._close(job, gateway)
+            if reserved:
+                self._follow_slots.release()
+            with suppress(OSError):
+                prepared.unlink(missing_ok=True)
+
+    def _reserve_follower(self) -> None:
+        """Wait before uploading while max_pending_jobs uploads are still being processed by Nomadic."""
+        while not self._follow_slots.acquire(timeout=1):
+            if self._stop.is_set():
+                raise InterruptedError("Worker is stopping.")
+
+    def _hand_off(self, job: AnnotationJob, gateway: AnnotationGateway) -> None:
+        """Follow an uploaded recording on its own thread, using the slot reserved before the upload."""
+        follower = threading.Thread(
+            target=self._follow, args=(job, gateway), name=f"nomadic-follow-{job.job_id}", daemon=True
+        )
+        with self._guard:
+            self._followers.add(follower)
+        follower.start()
+
+    def _follow(self, job: AnnotationJob, gateway: AnnotationGateway) -> None:
+        """Wait for Nomadic to ingest, annotate and return the uploaded recording."""
+        stage = "ingesting"
+        try:
+            job.video_id = gateway.ingest(job.ingest_id or "")
             job.state, job.message = "indexing", "Analyzing robotic actions."
             stage = "indexing"
             self._save(job)
@@ -292,20 +334,31 @@ class AnnotationService:
             stage = "fetching"
             self._fetch(job, gateway)
         except Exception as exc:
-            job.state = "interrupted" if job.remote_started else "failed"
-            # SDK exceptions may contain request details. Do not persist or log them.
-            job.message = self._failure_message(stage, exc)
-            logger.warning("Annotation job %s stopped during processing (%s)", job.job_id, type(exc).__name__)
-            if self.store:
-                self.store.save(job)
+            self._fail(job, stage, exc)
         finally:
-            if gateway:
-                try:
-                    gateway.close()
-                except Exception:
-                    logger.warning("Could not close the Nomadic session for job %s", job.job_id)
-            with suppress(OSError):
-                prepared.unlink(missing_ok=True)
+            self._close(job, gateway)
+            with self._guard:
+                self._followers.discard(threading.current_thread())
+            self._follow_slots.release()
+
+    def _fail(self, job: AnnotationJob, stage: str, exc: Exception) -> None:
+        job.state = "interrupted" if job.remote_started else "failed"
+        # SDK exceptions may contain request details. Do not persist or log them.
+        job.message = self._failure_message(stage, exc)
+        logger.warning("Annotation job %s stopped during processing (%s)", job.job_id, type(exc).__name__)
+        if self.store:
+            try:
+                self.store.save(job)
+            except JobStoreError:
+                logger.error("Annotation job %s could not be saved after it stopped", job.job_id)
+
+    @staticmethod
+    def _close(job: AnnotationJob, gateway: AnnotationGateway | None) -> None:
+        if gateway:
+            try:
+                gateway.close()
+            except Exception:
+                logger.warning("Could not close the Nomadic session for job %s", job.job_id)
 
     def _index(self, job: AnnotationJob, gateway: AnnotationGateway) -> None:
         """Save returned references before checking whether indexing completed."""
@@ -378,10 +431,15 @@ class AnnotationService:
             self._queue.put_nowait(None)
         if self._worker:
             self._worker.join(timeout=1)
+        with self._guard:
+            followers = list(self._followers)
+        for follower in followers:
+            follower.join(timeout=1)
         if self.store:
             with suppress(JobStoreError, ValueError):
                 self.store.recover()
         # A still-running SDK call retains the lock until process exit. A new
-        # process must not claim ownership while this worker can still write.
-        if self._lock_file and (self._worker is None or not self._worker.is_alive()):
+        # process must not claim ownership while this worker or a follower can still write.
+        threads = [self._worker, *followers]
+        if self._lock_file and not any(thread and thread.is_alive() for thread in threads):
             self._lock_file.close()
