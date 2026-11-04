@@ -4,6 +4,8 @@ import { useFetcher } from 'react-router'
 import type { AnnotationEvent, AnnotationStatus } from '@/api/annotations'
 import Button from '@/components/Button'
 
+import Progress from './Progress'
+
 const ACTIVE_STATES = new Set(['queued', 'preparing', 'uploading', 'ingesting', 'indexing', 'fetching'])
 
 function ActionDetails({ event }: { event: AnnotationEvent }) {
@@ -58,7 +60,7 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
       <h2 id='annotations-title' className='header'>
         Action annotations
       </h2>
-      {job?.state !== 'completed' && (
+      {!active && job?.state !== 'completed' && (
         <p className='text max-w-[80ch]'>
           Analyze this saved recording with Nomadic to find timestamped robot actions.
         </p>
@@ -90,9 +92,13 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
       )}
       {job && (
         <>
-          <p className='text' role='status' aria-live='polite'>
-            {job.message}
-          </p>
+          {active ? (
+            <Progress state={job.state} message={job.message} />
+          ) : (
+            <p className='text' role='status' aria-live='polite'>
+              {job.message}
+            </p>
+          )}
           {job.warnings.length > 0 && (
             <ul className='text list-inside list-disc'>
               {job.warnings.map((warning) => (
