@@ -3,47 +3,17 @@ import { ChevronRight, Download, ExternalLink } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useFetcher } from 'react-router'
 
-import type { AnnotationEvent, AnnotationStatus } from '@/api/annotations'
+import type { AnnotationStatus } from '@/api/annotations'
 import Button, { ButtonLink } from '@/components/Button'
 
+import ActionList from './ActionList'
+import { lanes } from './actions'
 import { NOMADIC_BUTTON } from './nomadicButton'
 import NomadicMark from './NomadicMark'
 import Progress from './Progress'
+import Timeline from './Timeline'
 
 const ACTIVE_STATES = new Set(['queued', 'preparing', 'uploading', 'ingesting', 'indexing', 'fetching'])
-
-function ActionDetails({ event }: { event: AnnotationEvent }) {
-  const transitions = event.gripper_transitions ?? []
-  const interactions = event.object_interactions ?? []
-  if (!transitions.length && !interactions.length) return null
-
-  return (
-    <details className='mt-3'>
-      <summary className='keyboard-focus w-fit cursor-pointer text-sm'>Details</summary>
-      <dl className='mt-2 grid gap-3 text-sm'>
-        {transitions.length > 0 && (
-          <div>
-            <dt className='font-medium'>Gripper transitions</dt>
-            <dd>{transitions.join(', ')}</dd>
-          </div>
-        )}
-        {interactions.length > 0 && (
-          <div>
-            <dt className='font-medium'>Object interactions</dt>
-            <dd>
-              <ul className='list-inside list-disc'>
-                {interactions.map((interaction) => {
-                  const label = typeof interaction === 'string' ? interaction : JSON.stringify(interaction)
-                  return <li key={label}>{label}</li>
-                })}
-              </ul>
-            </dd>
-          </div>
-        )}
-      </dl>
-    </details>
-  )
-}
 
 // Remembered per browser, so a station that hides the panel keeps it hidden across episodes
 const COLLAPSED_KEY = 'nomadic-annotations-collapsed'
@@ -111,8 +81,6 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
   const { state } = fetcher
 
   const canStart = status.can_submit && !active && !job?.remote_started && job?.state !== 'completed'
-  const showHand = job?.events.some((event) => !!event.acting_hand) ?? false
-  const showObjects = job?.events.some((event) => event.objects.length > 0) ?? false
 
   if (!status.enabled) return null
 
@@ -157,13 +125,6 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
               {job.message}
             </p>
           )}
-          {job.warnings.length > 0 && (
-            <ul className='text list-inside list-disc'>
-              {job.warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          )}
           {(job.viewer_url || job.state === 'completed') && (
             <div className='flex flex-wrap items-center gap-3'>
               {job.viewer_url && (
@@ -180,54 +141,9 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
           )}
           {job.state === 'completed' &&
             (job.events.length > 0 ? (
-              <div className='overflow-x-auto'>
-                <table className='text w-full border-collapse text-left'>
-                  <caption className='pb-3 text-left'>Times are seconds from the recording start.</caption>
-                  <thead>
-                    <tr>
-                      {[
-                        'Start',
-                        'End',
-                        'Action',
-                        ...(showHand ? ['Hand'] : []),
-                        ...(showObjects ? ['Objects'] : []),
-                      ].map((label) => (
-                        <th key={label} scope='col' className='border-pastel-grey-300 border-b p-2'>
-                          {label}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className='divide-pastel-grey-300 divide-y'>
-                    {job.events.map((event) => (
-                      <tr key={event.event_id}>
-                        <td className='p-2 align-top tabular-nums'>{event.start_seconds.toFixed(3)}</td>
-                        <td className='p-2 align-top tabular-nums'>{event.end_seconds.toFixed(3)}</td>
-                        <td className='p-2 align-top'>
-                          <p>{event.description}</p>
-                          <div className='mt-2 flex flex-wrap gap-1'>
-                            {(event.action_classes?.length
-                              ? event.action_classes
-                              : event.category
-                                ? [event.category]
-                                : []
-                            ).map((category) => (
-                              <span
-                                key={category}
-                                className='border-pastel-grey-300 bg-pastel-grey-100 inline-block rounded-sm border px-2 py-1 text-xs font-medium'
-                              >
-                                {category}
-                              </span>
-                            ))}
-                          </div>
-                          <ActionDetails event={event} />
-                        </td>
-                        {showHand && <td className='p-2 align-top'>{event.acting_hand ?? 'Unknown'}</td>}
-                        {showObjects && <td className='p-2 align-top'>{event.objects.join(', ') || '—'}</td>}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className='flex flex-col gap-5'>
+                <Timeline lanes={lanes(job.events)} />
+                <ActionList lanes={lanes(job.events)} />
               </div>
             ) : (
               <p className='text'>No action windows were returned for this recording.</p>
