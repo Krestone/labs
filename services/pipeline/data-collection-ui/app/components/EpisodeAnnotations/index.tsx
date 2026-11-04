@@ -1,9 +1,13 @@
-import { Download, Send } from 'lucide-react'
+import clsx from 'clsx'
+import { ChevronRight, Download, ExternalLink } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useFetcher } from 'react-router'
 
 import type { AnnotationEvent, AnnotationStatus } from '@/api/annotations'
-import Button from '@/components/Button'
+import Button, { ButtonLink } from '@/components/Button'
 
+import { NOMADIC_BUTTON } from './nomadicButton'
+import NomadicMark from './NomadicMark'
 import Progress from './Progress'
 
 const ACTIVE_STATES = new Set(['queued', 'preparing', 'uploading', 'ingesting', 'indexing', 'fetching'])
@@ -41,6 +45,63 @@ function ActionDetails({ event }: { event: AnnotationEvent }) {
   )
 }
 
+// Remembered per browser, so a station that hides the panel keeps it hidden across episodes
+const COLLAPSED_KEY = 'nomadic-annotations-collapsed'
+
+function Panel({ summary, children }: { summary?: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(true)
+  useEffect(() => {
+    try {
+      setOpen(localStorage.getItem(COLLAPSED_KEY) !== 'true')
+    } catch {
+      // Storage can be unavailable; the panel then starts open.
+    }
+  }, [])
+  const toggle = () => {
+    setOpen(!open)
+    try {
+      localStorage.setItem(COLLAPSED_KEY, String(open))
+    } catch {
+      // Collapsing still works for this page.
+    }
+  }
+
+  return (
+    <section aria-labelledby='annotations-title' className='flex flex-col gap-3'>
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <h2 id='annotations-title' className='header'>
+          <button
+            type='button'
+            aria-expanded={open}
+            aria-controls='annotations-body'
+            onClick={toggle}
+            className='keyboard-focus flex items-center gap-2 rounded-sm'
+          >
+            <ChevronRight aria-hidden className={clsx('h-5 w-5 transition-transform', open && 'rotate-90')} />
+            Action annotations
+            {!open && summary && <span className='text text-adriatic-500 font-normal'>· {summary}</span>}
+          </button>
+        </h2>
+        <span className='text text-adriatic-500 flex items-center gap-1'>
+          by <NomadicMark className='text-franka-blue h-3.5 w-3.5' /> Nomadic
+        </span>
+      </div>
+      {open && (
+        <div id='annotations-body' className='flex flex-col gap-3'>
+          {children}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function summaryOf(status: AnnotationStatus, active: boolean): string | undefined {
+  if (active) return 'In progress'
+  if (status.job?.state === 'completed') return `${status.job.events.length} actions`
+  if (status.job) return 'Needs attention'
+  return undefined
+}
+
 export default function EpisodeAnnotations({ id, initialStatus }: { id: string; initialStatus: AnnotationStatus }) {
   const fetcher = useFetcher<{ status?: AnnotationStatus; error?: string }>()
   const status = initialStatus
@@ -56,10 +117,7 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
   if (!status.enabled) return null
 
   return (
-    <section aria-labelledby='annotations-title' className='flex flex-col gap-3'>
-      <h2 id='annotations-title' className='header'>
-        Action annotations
-      </h2>
+    <Panel summary={summaryOf(status, active)}>
       {!active && job?.state !== 'completed' && (
         <p className='text max-w-[80ch]'>
           Analyze this saved recording with Nomadic to find timestamped robot actions.
@@ -72,9 +130,9 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
       )}
       {canStart && (
         <fetcher.Form method='post' action={endpoint}>
-          <Button variant='primary' type='submit' disabled={state !== 'idle'}>
-            <Send aria-hidden className='h-4 w-4' /> Auto Annotate with Nomadic
-          </Button>
+          <button className={NOMADIC_BUTTON} type='submit' disabled={state !== 'idle'}>
+            <NomadicMark className='h-4 w-4' /> Auto Annotate with Nomadic
+          </button>
         </fetcher.Form>
       )}
       {!active && job?.state === 'interrupted' && job.video_id && (job.analysis_id || job.batch_id) && (
@@ -107,19 +165,16 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
             </ul>
           )}
           {(job.viewer_url || job.state === 'completed') && (
-            <div className='flex flex-wrap items-center gap-x-5 gap-y-2'>
+            <div className='flex flex-wrap items-center gap-3'>
               {job.viewer_url && (
-                <a className='text keyboard-focus underline' href={job.viewer_url} target='_blank' rel='noreferrer'>
-                  Open in Nomadic Workbench
-                </a>
+                <ButtonLink variant='outline' href={job.viewer_url} target='_blank' rel='noreferrer'>
+                  <ExternalLink aria-hidden className='h-4 w-4' /> Open in Nomadic Workbench
+                </ButtonLink>
               )}
               {job.state === 'completed' && (
-                <a
-                  className='text keyboard-focus inline-flex items-center gap-2 underline'
-                  href={`${endpoint}&download=1`}
-                >
+                <ButtonLink variant='outline' href={`${endpoint}&download=1`}>
                   <Download aria-hidden className='h-4 w-4' /> Download annotations
-                </a>
+                </ButtonLink>
               )}
             </div>
           )}
@@ -202,6 +257,6 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
           )}
         </>
       )}
-    </section>
+    </Panel>
   )
 }
