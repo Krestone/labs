@@ -1,17 +1,13 @@
-"""Episode annotation endpoints; importing these requires no ROS runtime."""
+"""Episode annotation endpoints."""
 
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
-from annotations.models import AnnotationJob, AnnotationStatus
-from annotations.service import (
-    AnnotationConflictError,
-    AnnotationService,
-    AnnotationUnavailableError,
-    get_annotation_service,
-)
-from annotations.store import JobStoreError
+from dependencies import get_annotation_service
+from jobs.models import AnnotationJob, AnnotationStatus
+from jobs.service import AnnotationConflictError, AnnotationService, AnnotationUnavailableError
+from jobs.store import JobStoreError
 
 router = APIRouter(prefix="/api/v1/episodes/{episode_id}/annotations", tags=["Annotations"])
 
@@ -21,8 +17,6 @@ def status(episode_id: UUID, service: AnnotationService = Depends(get_annotation
     """Read optional integration availability and the latest attempt."""
     try:
         return service.status(episode_id)
-    except AnnotationConflictError as exc:
-        raise HTTPException(503, str(exc)) from exc
     except (AnnotationUnavailableError, JobStoreError) as exc:
         raise HTTPException(503, str(exc)) from exc
 
@@ -47,7 +41,7 @@ def download(episode_id: UUID, service: AnnotationService = Depends(get_annotati
     """Download the normalized result, including float times and provenance."""
     try:
         current = service.status(episode_id).job
-    except (AnnotationConflictError, AnnotationUnavailableError, JobStoreError) as exc:
+    except (AnnotationUnavailableError, JobStoreError) as exc:
         raise HTTPException(503, str(exc)) from exc
     if current is None or current.state != "completed":
         raise HTTPException(409, "Annotations are not complete.")
