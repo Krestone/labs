@@ -8,7 +8,7 @@ import nomadic  # type: ignore[import-untyped]
 
 from configs.annotator import AnnotationConfig
 from jobs.models import AnnotationEvent
-from jobs.ports import IndexResult
+from jobs.ports import AccountCheck, IndexResult, InvalidApiKeyError
 
 
 class NomadicGateway:
@@ -70,6 +70,18 @@ class NomadicGateway:
     def close(self) -> None:
         """Release the SDK's HTTP connection pool."""
         self.client.session.close()
+
+
+def verify_api_key(config: AnnotationConfig, api_key: str) -> AccountCheck:
+    """Check a key with Nomadic without uploading anything, and report the account it belongs to."""
+    client = nomadic.NomadicAI(api_key=api_key, base_url=config.base_url, timeout=15)
+    try:
+        identity = dict(client.verify_auth())
+    except nomadic.AuthenticationError as exc:
+        raise InvalidApiKeyError("Nomadic did not accept this API key.") from exc
+    finally:
+        client.session.close()
+    return AccountCheck(email=identity.get("email"))
 
 
 def primary_video(payload: dict[str, Any]) -> str:

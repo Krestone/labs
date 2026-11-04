@@ -1,9 +1,9 @@
 import clsx from 'clsx'
-import { ChevronRight, Download, ExternalLink } from 'lucide-react'
+import { ChevronRight, CircleCheck, Download, ExternalLink } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useFetcher } from 'react-router'
 
-import type { AnnotationStatus } from '@/api/annotations'
+import type { AnnotationStatus, StationAccount } from '@/api/annotations'
 import Button, { ButtonLink } from '@/components/Button'
 
 import ActionList from './ActionList'
@@ -11,9 +11,19 @@ import { lanes } from './actions'
 import { NOMADIC_BUTTON } from './nomadicButton'
 import NomadicMark from './NomadicMark'
 import Progress from './Progress'
+import Setup from './Setup'
 import Timeline from './Timeline'
 
 const ACTIVE_STATES = new Set(['queued', 'preparing', 'uploading', 'ingesting', 'indexing', 'fetching'])
+
+// Which account receives this station's uploads
+function Connected({ account }: { account: StationAccount }) {
+  return (
+    <p className='text text-positive-600 flex items-center gap-1.5'>
+      <CircleCheck aria-hidden className='h-4 w-4' /> Connected to Nomadic as {account.email ?? 'your account'}
+    </p>
+  )
+}
 
 // Remembered per browser, so a station that hides the panel keeps it hidden across episodes
 const COLLAPSED_KEY = 'nomadic-annotations-collapsed'
@@ -66,6 +76,7 @@ function Panel({ summary, children }: { summary?: string; children: React.ReactN
 }
 
 function summaryOf(status: AnnotationStatus, active: boolean): string | undefined {
+  if (status.setup) return 'Not connected'
   if (active) return 'In progress'
   if (status.job?.state === 'completed') return `${status.job.events.length} actions`
   if (status.job) return 'Needs attention'
@@ -83,9 +94,17 @@ export default function EpisodeAnnotations({ id, initialStatus }: { id: string; 
   const canStart = status.can_submit && !active && !job?.remote_started && job?.state !== 'completed'
 
   if (!status.enabled) return null
+  if (status.setup) {
+    return (
+      <Panel summary={summaryOf(status, active)}>
+        <Setup setup={status.setup} endpoint={endpoint} />
+      </Panel>
+    )
+  }
 
   return (
     <Panel summary={summaryOf(status, active)}>
+      {status.account && <Connected account={status.account} />}
       {!active && job?.state !== 'completed' && (
         <p className='text max-w-[80ch]'>
           Analyze this saved recording with Nomadic to find timestamped robot actions.

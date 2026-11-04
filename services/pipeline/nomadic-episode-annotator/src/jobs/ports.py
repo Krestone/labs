@@ -20,6 +20,17 @@ class IndexResult:
     has_warnings: bool = False
 
 
+@dataclass(frozen=True)
+class AccountCheck:
+    """What Nomadic reports for an API key: the account it belongs to."""
+
+    email: str | None
+
+
+class InvalidApiKeyError(ValueError):
+    """Nomadic rejected the API key."""
+
+
 class AnnotationGateway(Protocol):
     """One remote session; any call may raise, and the service maps failures by stage."""
 
@@ -49,3 +60,4 @@ class AnnotationGateway(Protocol):
 
 
 GatewayFactory = Callable[[AnnotationConfig], AnnotationGateway]
+KeyVerifier = Callable[[AnnotationConfig, str], AccountCheck]

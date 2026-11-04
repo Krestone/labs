@@ -7,7 +7,9 @@
 - Added the optional `nomadic-episode-annotator` service, which sends a saved episode to Nomadic for timestamped action
   annotation. When it is enabled, the `data-collection-ui` episode page shows an annotation panel to start a run and
   view saved results. Enabling it uploads episode data to Nomadic; see the service README before turning it on. The
-  service listens on loopback only, so only the `data-collection-ui` server can reach it.
+  service listens on loopback only, so only the `data-collection-ui` server can reach it. A station without an API key
+  can be connected from the episode page: the operator pastes a key, which is checked with Nomadic and saved on the
+  station.
 
 ## [0.2.1] - 2026-09-10
 

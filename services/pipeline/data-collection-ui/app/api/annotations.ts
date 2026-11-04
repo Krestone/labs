@@ -28,7 +28,18 @@ export type AnnotationJob = {
   events: AnnotationEvent[]
 }
 
-export type AnnotationStatus = { enabled: boolean; can_submit: boolean; message: string; job: AnnotationJob | null }
+export type StationSetup = { signup_url: string; api_keys_url: string }
+
+export type StationAccount = { email: string | null }
+
+export type AnnotationStatus = {
+  enabled: boolean
+  can_submit: boolean
+  message: string
+  job: AnnotationJob | null
+  setup?: StationSetup | null
+  account?: StationAccount | null
+}
 
 export function annotationUrl(base: URL, episodeId: string, download = false) {
   return new URL(`/api/v1/episodes/${encodeURIComponent(episodeId)}/annotations${download ? '/download' : ''}`, base)

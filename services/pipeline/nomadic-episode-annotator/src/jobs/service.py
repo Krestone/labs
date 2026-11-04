@@ -9,15 +9,22 @@ from pathlib import Path
 from typing import IO
 from uuid import UUID, uuid4
 
+from pydantic import SecretStr
+
 from configs.annotator import AnnotationConfig
+from jobs import station_key
 from jobs.episodes import recording_path
-from jobs.models import ACTIVE_STATES, AnnotationJob, AnnotationStatus
-from jobs.ports import AnnotationGateway, GatewayFactory
+from jobs.models import ACTIVE_STATES, AnnotationJob, AnnotationStatus, StationAccount, StationSetup
+from jobs.ports import AnnotationGateway, GatewayFactory, InvalidApiKeyError, KeyVerifier
 from jobs.store import JobStore, JobStoreError
-from jobs.workbench import workbench_url
+from jobs.workbench import api_keys_url, signup_url, workbench_url
 from recording_conversion.preparation import RecordingPreparer
 
 logger = logging.getLogger(__name__)
+
+_ALREADY_CONNECTED = (
+    "This station is already connected to Nomadic. An administrator can change the key in the station configuration."
+)
 
 
 class AnnotationConflictError(Exception):
@@ -31,10 +38,14 @@ class AnnotationUnavailableError(Exception):
 class AnnotationService:
     """Serialize expensive preparation/upload jobs on one worker, off the request threads."""
 
-    def __init__(self, config: AnnotationConfig, gateway_factory: GatewayFactory) -> None:
+    def __init__(
+        self, config: AnnotationConfig, gateway_factory: GatewayFactory, key_verifier: KeyVerifier | None = None
+    ) -> None:
         """Create a dormant service; disabled instances perform no filesystem or network work."""
         self.config = config
         self.gateway_factory = gateway_factory
+        self.key_verifier = key_verifier
+        self.account: StationAccount | None = None
         self.store: JobStore | None = None
         self._lock_file: IO[str] | None = None
         self._guard = threading.Lock()
@@ -54,8 +65,21 @@ class AnnotationService:
             return str(exc)
         return None
 
+    def _setup(self) -> StationSetup | None:
+        """Offer account links only when an enabled station is missing just its API key."""
+        if not self.config.enabled or self.config.api_key.get_secret_value():
+            return None
+        try:
+            return StationSetup(
+                signup_url=signup_url(self.config.dashboard_url),
+                api_keys_url=api_keys_url(self.config.dashboard_url),
+            )
+        except ValueError:
+            return None
+
     def start(self) -> None:
         """Acquire single-worker ownership and recover interrupted local jobs."""
+        self._load_station_key()
         with self._guard:
             if self.store or self.unavailable_reason():
                 return
@@ -83,6 +107,67 @@ class AnnotationService:
             self._worker = threading.Thread(target=self._work, name="nomadic-annotations", daemon=True)
             self._worker.start()
 
+    def connect(self, api_key: str) -> StationAccount:
+        """Verify an operator's key with Nomadic, then save it and start the worker; only for unconnected stations.
+
+        A station that already has a key, from its configuration or an earlier connection, keeps it. Replacing a key
+        from the page would let anyone who can open the UI redirect the station's uploads to another account.
+        """
+        api_key = api_key.strip()
+        if not self.config.enabled:
+            raise AnnotationConflictError("Nomadic annotations are not enabled for this station.")
+        if self.config.api_key.get_secret_value():
+            raise AnnotationConflictError(_ALREADY_CONNECTED)
+        if not api_key:
+            raise ValueError("Paste a Nomadic API key.")
+        # Keys travel in an HTTP header; text copied from a page can carry characters no key has.
+        if not api_key.isascii() or not api_key.isprintable() or " " in api_key:
+            raise ValueError(
+                "This is not a Nomadic API key: it contains spaces or special characters. Copy the key again and "
+                "paste only the key."
+            )
+        if self.key_verifier is None:
+            raise AnnotationUnavailableError("This annotator cannot check API keys.")
+        try:
+            check = self.key_verifier(self.config, api_key)
+        except InvalidApiKeyError:
+            raise ValueError(
+                "Nomadic did not accept this API key. Check that it was copied completely and has not expired."
+            ) from None
+        except Exception as exc:
+            # SDK exceptions may contain request details. Do not chain or log them.
+            logger.warning("Could not verify a Nomadic API key (%s)", type(exc).__name__)
+            raise AnnotationUnavailableError(
+                "Nomadic could not be reached to check the key. Check the station's internet connection and try again."
+            ) from None
+        with self._guard:
+            if self.config.api_key.get_secret_value():
+                raise AnnotationConflictError(_ALREADY_CONNECTED)
+            try:
+                station_key.save(self.config.state_path, api_key, check.email)
+            except OSError as exc:
+                raise AnnotationUnavailableError(
+                    "The key could not be saved. Check the station's data directory."
+                ) from exc
+            self.config.api_key = SecretStr(api_key)
+            self.account = StationAccount(email=check.email)
+        self.start()
+        return self.account
+
+    def _load_station_key(self) -> None:
+        """Use a key connected from the episode page when the configuration does not set one."""
+        if not self.config.enabled or self.config.api_key.get_secret_value():
+            return
+        try:
+            saved = station_key.load(self.config.state_path)
+        except (OSError, ValueError, KeyError):
+            logger.warning("The saved Nomadic API key could not be read; the station needs to be connected again")
+            return
+        if saved:
+            api_key, email = saved
+            self.config.api_key = SecretStr(api_key)
+            self.account = StationAccount(email=email)
+
     def _running_store(self) -> JobStore:
         if self.store is None:
             raise AnnotationUnavailableError("The annotation worker is not running. Check the annotator's logs.")
@@ -92,9 +177,9 @@ class AnnotationService:
         """Read the latest persisted result without side effects."""
         reason = self.unavailable_reason()
         if reason:
-            return AnnotationStatus(enabled=self.config.enabled, message=reason)
+            return AnnotationStatus(enabled=self.config.enabled, message=reason, setup=self._setup())
         job = self._running_store().latest(episode_id)
-        status = AnnotationStatus(enabled=True, message="", job=job)
+        status = AnnotationStatus(enabled=True, message="", job=job, account=self.account)
         if job and job.video_id:
             job.viewer_url = workbench_url(self.config.dashboard_url, job.batch_id, job.video_id)
         if job and (job.state in ACTIVE_STATES or job.remote_started or job.state == "completed"):

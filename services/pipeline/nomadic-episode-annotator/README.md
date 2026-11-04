@@ -6,7 +6,8 @@ interactions. Stations without this service run unchanged.
 
 ## Interface
 
-- HTTP on `127.0.0.1:3005` (loopback only), under `/api/v1/episodes/{episode_id}/annotations`.
+- HTTP on `127.0.0.1:3005` (loopback only), under `/api/v1/episodes/{episode_id}/annotations`, plus
+  `/api/v1/station/api-key` to connect the station from the episode page.
 - Reads processed episodes from `/workspace/data/processed_episodes` (read-only).
 - Keeps job state in `/workspace/data/nomadic_annotations` (read-write).
 - Configured through `NOMADIC_*` environment variables; see [Configuration](#configuration).
@@ -33,8 +34,8 @@ Read this before enabling the service, and confirm the decision with whoever own
 - **When:** only when an operator selects **Auto Annotate with Nomadic** for one saved episode. Nothing is sent in the
   background, and uploads or analyses with an uncertain outcome are never retried automatically. **Refresh saved
   result** only fetches an existing analysis.
-- **What stays local:** the API key (never sent to the browser), raw episodes, the original processed recording, other
-  episodes and the job store. The prepared copy is deleted from the station once the job ends.
+- **What stays local:** the API key (never sent back to the browser or logged), raw episodes, the original processed
+  recording, other episodes and the job store. The prepared copy is deleted from the station once the job ends.
 
 ## Setup
 
@@ -42,8 +43,8 @@ For the FR3 Duo example station:
 
 1. Build the image from the repository root: `task build SERVICE=nomadic-episode-annotator`. `BUILD_TARGET` selects
    another target than `dev`. Tilt builds it itself.
-2. In `deployments/fr3_duo_example/.env`, which is gitignored, set `NOMADIC_API_KEY` and select the override (see
-   [Optional Services](../../../deployments/README.md#optional-services)):
+2. In `deployments/fr3_duo_example/.env`, which is gitignored, select the override (see
+   [Optional Services](../../../deployments/README.md#optional-services)) and, optionally, set `NOMADIC_API_KEY`:
 
    ```sh
    COMPOSE_FILE=docker-compose.yml:docker-compose.nomadic.yml
@@ -56,6 +57,16 @@ For the FR3 Duo example station:
 directory, and sets `NOMADIC_EPISODE_ANNOTATOR_PORT` on the UI. `task start-prod` does not recreate `data-collection`,
 so this can run during a recording session; restarting the UI is the only interruption. Removing the override from
 `COMPOSE_FILE` and running `task start-prod` again reverses it and keeps the saved results in `nomadic_annotations/`.
+
+### Connect from the episode page
+
+Without `NOMADIC_API_KEY`, the annotation panel guides the operator through creating a Nomadic account and pasting an
+API key. The annotator checks the key with Nomadic before saving it and reports the connected account. An accepted key
+is saved as `station_key.json` in the state directory, readable only by the annotator, and is used after restarts.
+
+The page can only connect a station that has no key. To change or remove a connected key, set `NOMADIC_API_KEY`, which
+takes precedence, or delete `station_key.json` and restart the annotator. Anyone who can open the episode page can
+connect an unconnected station, so set `NOMADIC_API_KEY` where that is not acceptable.
 
 For another deployment, copy `docker-compose.nomadic.yml` and adjust its mounts. The service's own `docker-compose.yml`
 runs it standalone against `DATA_ROOT`.
@@ -93,14 +104,14 @@ Nomadic-compatible messages. The contract-based ROS conversion supports the FR3 
 
 ### Configuration
 
-For the reference Docker setup, only the API key requires a new value. Keep the state directory across container
-replacement to retain saved results and prevent duplicate submissions. To change a setting not referenced in
-`docker-compose.nomadic.yml`, add it to the service's `environment` there.
+For the reference Docker setup, only the API key requires a new value, set here or from the episode page. Keep the state
+directory across container replacement to retain saved results and prevent duplicate submissions. To change a setting
+not referenced in `docker-compose.nomadic.yml`, add it to the service's `environment` there.
 
 | Variable                          | Default                               | When to override                                               |
 | --------------------------------- | ------------------------------------- | -------------------------------------------------------------- |
 | `NOMADIC_ENABLED`                 | `false`                               | Enable annotations; the example override sets this to `true`.  |
-| `NOMADIC_API_KEY`                 | Unset                                 | Required Nomadic account credential.                           |
+| `NOMADIC_API_KEY`                 | Unset                                 | Nomadic account credential; otherwise connect from the UI.     |
 | `NOMADIC_POLICY_CONTRACT_PATH`    | Unset; set by the example override    | Existing LABS reference I/O contract.                          |
 | `NOMADIC_SPEC_PATH`               | Unset                                 | Spec for an already compatible recording.                      |
 | `NOMADIC_FOLDER`                  | `Franka LABS`                         | Choose the destination folder in Nomadic.                      |
@@ -112,7 +123,8 @@ replacement to retain saved results and prevent duplicate submissions. To change
 | `NOMADIC_MAX_PENDING_JOBS`        | `4`                                   | Change the queue bound; one worker handles annotation jobs.    |
 | `NOMADIC_MAX_RECORDING_BYTES`     | `4294967296` (4 GiB)                  | Change the accepted recording size.                            |
 
-With `NOMADIC_ENABLED=false`, or without an API key, the episode page explains why and does not offer submission.
+With `NOMADIC_ENABLED=false` the episode page explains why and does not offer submission. Without an API key it offers
+to [connect the station](#connect-from-the-episode-page).
 
 The API key's Nomadic account must have access to MCAP uploads and robot action annotation. The SDK calls this
 annotation mode `index(..., mode="robotics")`.

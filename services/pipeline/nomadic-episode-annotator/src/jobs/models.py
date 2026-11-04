@@ -54,6 +54,19 @@ class AnnotationJob(BaseModel):
     viewer_url: str | None = None
 
 
+class StationSetup(BaseModel):
+    """Links an operator follows to connect a station that has no Nomadic API key yet."""
+
+    signup_url: str
+    api_keys_url: str
+
+
+class StationAccount(BaseModel):
+    """The Nomadic account an operator connected this station to; never includes the key."""
+
+    email: str | None
+
+
 class AnnotationStatus(BaseModel):
     """Status loaded by the episode UI without exposing configuration secrets."""
 
@@ -61,3 +74,5 @@ class AnnotationStatus(BaseModel):
     can_submit: bool = False
     message: str
     job: AnnotationJob | None = None
+    setup: StationSetup | None = None
+    account: StationAccount | None = None

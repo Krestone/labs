@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from dependencies import get_annotation_service
 from handlers.annotations import router
+from handlers.station import router as station_router
 
 
 @asynccontextmanager
@@ -23,3 +24,4 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(title="Nomadic Episode Annotator", lifespan=lifespan)
 app.include_router(router)
+app.include_router(station_router)
