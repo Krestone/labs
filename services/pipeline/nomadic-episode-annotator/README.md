@@ -6,7 +6,7 @@ interactions. Stations without this service run unchanged.
 
 ## Interface
 
-- HTTP on port `3005`, under `/api/v1/episodes/{episode_id}/annotations`.
+- HTTP on `127.0.0.1:3005` (loopback only), under `/api/v1/episodes/{episode_id}/annotations`.
 - Reads processed episodes from `/workspace/data/processed_episodes` (read-only).
 - Keeps job state in `/workspace/data/nomadic_annotations` (read-write).
 - Configured through `NOMADIC_*` environment variables; see [Configuration](#configuration).
