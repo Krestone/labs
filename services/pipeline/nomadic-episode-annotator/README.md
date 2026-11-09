@@ -6,7 +6,7 @@ interactions. Stations without this service run unchanged.
 
 ## Interface
 
-- HTTP on `127.0.0.1:3005` (loopback only), under `/api/v1/episodes/{episode_id}/annotations`, plus
+- HTTP on `127.0.0.1:3050` (loopback only), under `/api/v1/episodes/{episode_id}/annotations`, plus
   `/api/v1/station/api-key` to connect the station from the episode page.
 - Reads processed episodes from `/workspace/data/processed_episodes` (read-only).
 - Keeps job state in `/workspace/data/nomadic_annotations` (read-write).
@@ -209,7 +209,7 @@ accuracy should also be reviewed against the intended annotation task.
 - **Storage unavailable:** check that the state directory is writable and persistent. Do not remove annotation state to
   retry a job that may already exist in Nomadic.
 - **Annotation temporarily unavailable on the episode page:** the UI cannot reach the service; check that it is running
-  on port `3005`. The rest of the episode page remains available.
+  on port `3050`. The rest of the episode page remains available.
 
 ## Development
 
