@@ -203,8 +203,10 @@ raw recordings and multi-file stitching are not supported.
 
 LABS whole-video camera messages are converted to H.264 frames. For the reference station, camera clocks are anchored to
 the recorded capture stamps and aligned to the head camera's fixed playback rate. Short gaps repeat the nearest frame;
-the prepared spec records camera offsets and repeated frames. Long gaps, mismatched frame counts and non-increasing
-timestamps are rejected before upload. Existing supported compressed frames or images are preserved.
+the prepared spec records camera offsets and repeated frames. When the cameras start or stop at different times, only
+the interval all of them recorded is annotated, annotation times count from its start, and the result shows a warning.
+Long gaps, cameras without a common interval, mismatched frame counts and non-increasing timestamps are rejected before
+upload. Existing supported compressed frames or images are preserved.
 
 ### Reference station mapping
 
