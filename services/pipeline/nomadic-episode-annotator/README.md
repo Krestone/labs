@@ -35,8 +35,9 @@ Read this before enabling the service, and confirm the decision with whoever own
   follow that account's terms with Nomadic, not LABS.
 - **When:** only when an operator selects **Auto Annotate with Nomadic** for one saved episode. Nothing is sent in the
   background, and uploads or analyses with an uncertain outcome are never retried automatically. Continuing a job from
-  the panel never uploads the recording again: it fetches a saved analysis, waits again for a saved upload, or analyzes
-  a saved upload that Nomadic declined for lack of credits.
+  the panel never uploads the recording again: it fetches a saved analysis, waits again for a saved upload or annotation
+  run, or analyzes a saved upload that Nomadic declined for lack of credits. **Start again**, offered only when nothing
+  can be continued, uploads the recording again.
 - **What stays local:** the API key (never sent back to the browser or logged), raw episodes, the original processed
   recording, other episodes and the job store. The prepared copy is deleted from the station once the job ends.
 
@@ -242,8 +243,12 @@ accuracy should also be reviewed against the intended annotation task.
 - **Mapping or preparation error:** check the recording and mapping. Failures before upload can be corrected and
   submitted again.
 - **Queue full:** wait for a running annotation to finish, then retry.
-- **Upload, processing or annotation interrupted:** inspect the saved references and Nomadic workspace before submitting
-  again. The service does not repeat uploads or analyses after an uncertain outcome.
+- **Upload, processing or annotation interrupted:** use **Continue with the saved upload** when offered; it waits for
+  the saved upload or annotation run again and never starts a second analysis. When nothing can be continued, such as an
+  upload whose answer was lost, the panel offers **Start again**, which uploads the recording again. The service never
+  repeats uploads or analyses on its own.
+- **Nomadic reports that processing or annotation failed:** nothing is still running, so the panel offers **Start
+  again**.
 - **Not enough Nomadic credits:** Nomadic declined the analysis before starting it, so nothing was charged and the
   recording stays uploaded. Top up from the link in the panel, then use **Retry annotation**; the saved upload is
   analyzed without uploading again.
@@ -253,8 +258,9 @@ accuracy should also be reviewed against the intended annotation task.
   without uploading or analyzing again.
 - **Processing result was not received:** use **Continue with the saved upload** when offered. This waits for Nomadic to
   finish the saved upload without sending it again.
-- **Service restarted during annotation:** the job is marked interrupted. Known Nomadic identifiers are retained for
-  inspection or retrieval.
+- **Service restarted during annotation:** the job is marked interrupted and keeps its Nomadic references. The
+  annotation run is saved as soon as it starts, so **Continue** follows the same run after a restart and nothing is
+  analyzed twice.
 - **Storage unavailable:** check that the state directory is writable and persistent. Do not remove annotation state to
   retry a job that may already exist in Nomadic.
 - **Annotation temporarily unavailable on the episode page:** the UI cannot reach the service; check that it is running
