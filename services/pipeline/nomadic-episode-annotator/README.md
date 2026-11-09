@@ -113,7 +113,7 @@ not referenced in `docker-compose.nomadic.yml`, add it to the service's `environ
 
 | Variable                          | Default                               | When to override                                               |
 | --------------------------------- | ------------------------------------- | -------------------------------------------------------------- |
-| `NOMADIC_ENABLED`                 | `false`                               | Enable annotations; the example override sets this to `true`.  |
+| `NOMADIC_ENABLED`                 | `true` in compose; otherwise `false`  | Set `false` to turn annotations off but keep the service.      |
 | `NOMADIC_API_KEY`                 | Unset                                 | Nomadic account credential; otherwise connect from the UI.     |
 | `NOMADIC_POLICY_CONTRACT_PATH`    | Unset; set by the example override    | Existing LABS reference I/O contract.                          |
 | `NOMADIC_SPEC_PATH`               | Unset                                 | Spec for an already compatible recording.                      |
