@@ -40,6 +40,19 @@ Read this before enabling the service, and confirm the decision with whoever own
 - **What stays local:** the API key (never sent back to the browser or logged), raw episodes, the original processed
   recording, other episodes and the job store. The prepared copy is deleted from the station once the job ends.
 
+## Nomadic account and billing
+
+Each station uses one Nomadic account, through its API key.
+
+1. On a station without a key, the annotation panel links to a Nomadic sign-up page made for LABS
+   (`https://app.nomadicml.com/signup?partner=franka-labs`). An existing Nomadic account works too.
+2. Verify the account's email address.
+3. Generate an API key under **Profile → API keys** and paste it into the panel, or set `NOMADIC_API_KEY`.
+
+Annotation is paid from the Nomadic account's credit. For current rates, the balance and buying credit, see **Profile →
+Billing** in Nomadic. When the credit runs out, the panel says so and links to that page; the run then continues from
+the saved upload.
+
 ## Setup
 
 For the FR3 Duo example station:
@@ -149,6 +162,40 @@ Hand and Objects columns appear only when data is present. Every returned action
 download includes the complete returned `structured_output`, including fields not displayed in the table. Missing fields
 are left empty rather than inferred from descriptions.
 
+## Saved annotations
+
+The state directory (`/workspace/data/nomadic_annotations`, mounted from `${DATA_ROOT}/nomadic_annotations`) holds:
+
+- `jobs.sqlite3`: every annotation job and its results. Back it up with the directory; do not edit it.
+- `station_key.json`: the API key connected from the episode page, if any. Readable only by the annotator.
+- `prepared/`: the temporary H.264 copy of a recording while it is uploaded. Deleted when the job ends.
+- `worker.lock`: ensures that only one annotator process uses the directory.
+
+Results are not written as separate files. **Download annotations** on the episode page, or
+`GET /api/v1/episodes/{episode_id}/annotations/download`, returns `{episode_id}-annotations.json` for a completed job:
+
+| Field                                               | Content                                                      |
+| --------------------------------------------------- | ------------------------------------------------------------ |
+| `episode_id`, `job_id`                              | The LABS episode and this annotation attempt.                |
+| `state`, `message`, `created_at`, `updated_at`      | Job outcome and UTC timestamps.                              |
+| `source_sha256`                                     | SHA-256 of the processed MCAP that was annotated.            |
+| `video_id`, `batch_id`, `analysis_id`, `viewer_url` | Nomadic references and the Workbench link for the recording. |
+| `warnings`                                          | Notes from preparation, such as nominal robot placement.     |
+| `events`                                            | The actions, in time order; fields below.                    |
+
+Each entry of `events`:
+
+| Field                          | Content                                                                   |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| `start_seconds`, `end_seconds` | Action window, in seconds from the start of the recording.                |
+| `description`, `category`      | The action in words and its category.                                     |
+| `acting_hand`                  | `left`, `right`, `both` or `null`.                                        |
+| `objects`, `action_classes`    | Objects involved and action class tags.                                   |
+| `gripper_transitions`          | Gripper opening and closing within the action.                            |
+| `object_interactions`          | Interactions with objects, as text or as structured entries.              |
+| `structured_output`            | Everything Nomadic returned for the action, including undisplayed fields. |
+| `event_id`                     | Nomadic's identifier for the action.                                      |
+
 ## Recordings
 
 An episode must be saved and have the processor's `.processing_complete` marker. A single processed MCAP is required;
@@ -210,6 +257,10 @@ accuracy should also be reviewed against the intended annotation task.
   retry a job that may already exist in Nomadic.
 - **Annotation temporarily unavailable on the episode page:** the UI cannot reach the service; check that it is running
   on port `3050`. The rest of the episode page remains available.
+
+## Contact
+
+Nomadic maintains this service and supports Nomadic accounts and billing: support@nomadicml.com.
 
 ## Development
 
